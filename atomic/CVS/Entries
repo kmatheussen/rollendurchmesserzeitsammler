@@ -1,0 +1,14 @@
+/lffifo.c/1.2/Tue Apr  5 11:11:30 2005//
+/lffifo.h/1.3/Wed May 25 14:43:04 2005//
+/lffifoIntel.c/1.3/Wed May 25 14:43:04 2005//
+/lffifoppc.c/1.4/Tue Jul  3 12:05:47 2007//
+/lflifo.c/1.2/Tue Apr  5 11:11:30 2005//
+/lflifo.h/1.3/Wed May 25 14:43:04 2005//
+/lflifoIntel.c/1.2/Tue Apr  5 11:11:30 2005//
+/lflifoppc.c/1.2/Tue Apr  5 11:11:30 2005//
+/msAtomic.h/1.3/Tue Jan 17 11:11:42 2006//
+/msAtomicIntel.h/1.3/Tue Jul  3 12:05:47 2007//
+/msAtomicPPC.h/1.4/Tue Jul  3 12:05:47 2007//
+/msAtomicPPC_CW.h/1.2/Tue Apr  5 11:11:30 2005//
+/msAtomicWin32.h/1.2/Tue Apr  5 11:11:30 2005//
+D/benchs////

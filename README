@@ -1,0 +1,339 @@
+
+The Audio Rollendurchmesserzeitsammler V0.1.6
+
+Kjetil Matheussen, 2009-11-01.
+
+
+ABOUT
+-----
+The Audio Rollendurchmesserzeitsammler is a garbage collector
+which makes it possible to efficiently allocate and use memory
+inside a realtime audio thread.
+
+There is no write barrier, no read barrier, no special pointer
+types or templates (ie. no need to tell
+the collector exactly where pointers are), no reference counting,
+cyclic dependencies are detected, and it should be hard realtime safe.
+
+The collector is made to be a drop in replacement for Hans Boehm's
+conservative garbage collector for C and C++ (HBGC). This means
+Rollendurchmesserzeitsammler makes it easier to use any programming
+language which uses HBGC for realtime audio programming.
+
+The collector works by first allocating a fixed size heap small
+enough to be fully copied within '2*(m-s)', where 'm' is the time
+between soundcard interrupts, and 's' is the time it takes to
+process one block of audio.
+
+Copying this fixed size heap happens in a parallel thread,
+and it should normally not take very much time. An important
+restriction is that it is not possible to use more
+pointer-holding memory than the size of this heap. A heap size
+of 1MB seems to currently be enough for most types of usages,
+and on current machines it should not take more than 1 ms to
+copy 1MB of memory.
+
+However, "atomic memory", for instance audio sample buffers, is allocated from
+a different heap which does not have these restrictions. So the
+atomic heap can be as large as needed without causing any increase
+in CPU.
+
+
+
+GARBAGE COLLECTOR TYPE
+----------------------
+Short: Snapshot mark-and-sweep.
+Long: Hard realtime conservative parallel non-moving snapshot-mark-sweep-and-free.
+
+
+
+PURPOSE
+-------
+This collector might be useful for running high level, high performing, and garbage producing
+languages such as C#, Clean, Common Lisp, D, Eiffel, Haskell, Java,
+Oberon-2, OCaml, Scheme or SML directly inside a realtime audio thread doing signal processing.
+(http://shootout.alioth.debian.org/)
+
+It can also be useful for running less high performing programming languages
+which are not doing signal processing directly but would still be convenient
+to run inside the realtime audio thread, for example for handling midi events.
+
+By replacing the garbage collector in
+a high level language with the one provided in this package, the language becomes one step closer
+to be able to do realtime signal processing directly in the audio thread. And in
+some cases, this might very well be all thats needed too.
+
+One example is Stalin, an extremely efficient Scheme compiler.
+By only replacing Hans Boehm's garbage collector, which Stalin normally
+is using, Stalin's generated code can now run safely inside a realtime audio thread.
+See the provided example stalinwrapper/graincloud.scm.
+
+
+
+RESTRICTIONS
+------------
+
+(The first one is a lot more serious than the others)
+
+*Allocating a too large heap for holding non-atomic memory might make the collector
+ use too much CPU, especially on single processor machines. This size depends on
+ the machine, audio block size, and the number of processors in the machine,
+ but a heap of 1MB or less should work very well most of the time.
+
+ Also note that the collector works much better when using many smaller heaps for non-atomic
+ memory. For example by allocating one small heap per instrument instead
+ of letting the instruments share one big heap.
+
+
+*Non-aligned pointers are not recognized. (ie. C/C++ should take
+ care of placing pointers in memory. For example, storing pointers inside
+ a char array might not work.) This restriction can be removed
+ as well, but could decrease the speed of the collector considerably, and it
+ shouldn't be a problem either.
+ 
+*The roots must be manually supplied. (See the Stalin example
+ on how to add stack, registers and program data memory)
+
+*All other common restrictions which applies to conservative garbage collectors for C and C++,
+ such as various (uncommon) bit-twiddling tricks, applies to this collector as well.
+ (see HBGC documentation).
+
+
+
+HOW IT WORKS
+------------
+When the audio thread has finished processing a block of samples, and there
+might be garbage to collect, and it's a reasonable time to collect garbage,
+the audio thread signals the garbage collector thread to start working. The garbage collector thread
+then starts by taking a snapshot of the root sets and the dynamic memory and after that does
+a traditional mark and sweep. While the garbage collector thread
+takes the snapshot, the audio thread is not allowed to run. In case the audio thread
+must run before the garbage collector is finished taking the snapshot, the audio
+thread can not do normal operation and will most likely only produce silent sound.
+(ie. both the audio thread and the garbage collector thread fails)
+
+Root set placements must be manually supplied to the garbage collector. However, it is
+possible to use code from, for example, Hans Boehms garbage collector to automatically add stack, registers
+and data memory, in case that is needed.
+
+The collector is neither incremental nor
+generational. I'm not sure how it would be possible to make it either incremental
+or generational without losing hard realtime capability the way it currently works.
+Furthermore, it does not use memory protection as a write barrier or copy-on-write
+to monitor the heap or using either to avoid copying
+everything at once before the main thread can start again, a technique
+commonly used in other concurrent
+mark-and-sweep collectors, for the same reason.
+
+
+
+REALTIME ISSUES
+---------------
+
+Snapshot duration is bounded by the size of the root sets and the size of the non-atomic
+memory heap. The maximum time allowed doing the snapshot is bounded by the time
+it takes to play one block of audio ('m') subtracted by the time the program spends
+processing one block of audio ('s'), times two: '2*(m-s)'.
+
+A heap size of less than 1 megabyte may work very well. The cost
+of duplicating a heap of 100.000 bytes only takes up about 2% extra cpu time on my
+single processor personal computer from 2002-2003 running a blocksize of 128.
+(Note that a more common blocksize of 1028 would yield a cpu usage of 1/8 of 2%).
+Furthermore, since todays computers are many times faster than
+this, especially those with 4 or 8 cores, (which the garbage collector
+is able to fully utilitize (well, at least that's the plan)), the number
+of bytes in the heap can probably be multiplied many times.
+
+As long as the heap is reasonable small, which it probably should be while doing signal processing
+tasks, duplicating the entire heap should not be a costly operation with current personal
+computers. On a multiprocessor machine, using heaps of many megabytes should not
+be a problem. I've also successfully tried using a 20MB heap on a dual-core intel machine.
+
+
+
+EXAMPLE OF USAGE
+----------------
+
+#include <rollendurchmesserzeitsammler.h>
+
+tar_heap_t *heap;
+
+int audio_thread(int blocksize){
+
+  int i;
+  static void *root[50];
+
+
+  // Must be called before using any heap. It's argument is the time
+  // (in seconds) since last call to tar_init_block.
+  tar_init_block((float)blocksize/44100.0f);
+
+
+  // tar_before_using_heap must be called before using a heap.
+  // Will not return until previous snapshot was finished
+  tar_before_using_heap(heap);
+
+  // Allocate and use memory
+  for(i=0;i<blocksize;i++){
+    root[x]=tar_alloc(heap,20);
+  }
+
+
+  // If tar_after_using_heap returns true, tar_run_gc must be called.
+  if(tar_after_using_heap(heap)){
+    // Roots must be added before calling tar_run_gc
+    tar_add_root(heap,&root[0],&root[51]);
+    // Signal to start new garbage collection
+    tar_run_gc(heap);
+  }
+
+  return 0;
+}
+
+
+int main(){
+   tar_init(10*1024*1024,// Size of the atomic memory heap (Can be large). All heaps share the same atomic memory heap.
+            1024*1024,   // Size of non-atomic memory heap per garbage collector heap (Should be as small as possible)
+            1024*64      // Maximum size of memory block to allocate. (Should be as small as possible)
+            audio_prior  // Priority of the audio thread. Using jack, this would be jack_client_real_time_priority(client)
+            1.0f         // Time (in seconds) between doing full snapshots. 1 second should work fine.
+	     );
+    heap=tar_create_heap(); // Creates a new heap contaning non-atomic memory.
+    start_audio_thread(audio_thread);
+    wait_forever();
+    tar_delete(heap);
+    return 0;
+}
+
+
+
+
+HISTORY
+-------
+0.1.5 -> 0.1.6
+* Released simultaneously with my Master's thesis.
+  Some cleanups are needed. Next release should be less confusing.
+
+
+0.1.4 -> 0.1.5
+* Changed behaviour for tar_alloc_atomic. The returned memory will now be cleared.
+
+
+0.1.3 -> 0.1.4
+* Fixed deadlock
+
+
+0.1.2 -> 0.1.3
+* Various bug-fixes
+
+
+0.1.1 -> 0.1.2
+* Added BENCHMARK option (call "tar_bench_print" to print benchmarks)
+* Added NO_SNAPSHOT option (plain mark-and-sweep)
+* Added BOUND_THREADS_TO_ONE_CPU option. Improves performance and consistancy of CPU usage.
+* Added PARALLEL_SNAPSHOT option. Experiment to divide the snapshot job by two threads. Didn't really improve
+  anything in my tests, probably because memory bandwidth is the bottleneck.
+* Added SNAPSHOT_DIVIDE option. If using more memory than the size the pointer-containing heap / SNAPSHOT_DIVIDE,
+  a warning will appear on screen.
+* Partly turned full snapshot into busy-looping to make sure full snapshot takes the same time every time.
+  SNAPSHOT_DIVIDE is used to select how much of the heap is busy-looped-copied.
+
+0.1.0 -> 0.1.1
+* Fixed README file. (horror)
+* Fixed some smaller 64 bit issues.
+
+0.0.7 -> 0.1.0
+* Completely rewritten.
+* Added hash-table for mark. Should be a magnitude faster.
+* Using stacks to transport memory block information back and
+  forth between the snapshot thread / mark-and-sweep thread and the
+  free thread / audio thread. This results in smaller heaps
+  and better memory separation between threads, giving higher
+  and more predictable performance on SMP machines.
+* Let the audio thread wait for the garbage collector to finish
+  instead of failing, plus making sure snapshots are only
+  taken each second audio block. This makes the API simpler
+  and causes twice as much time available for doing snapshots.
+* Proper support for more than one heap. The function
+  'tar_init_block' must be called in the audio block function
+  before using any heap. 'tar_init_block' selects
+  which heap to run garbage collection on.
+* Deleting a heap should not cause memory leak in atomic memory.
+* Added the functions 'tar_get_used_mem' and 'tar_get_used_atomic_mem'.
+
+
+0.0.6 -> 0.0.7
+* Cleaned up source a bit.
+* Fixed a very serious bug in "tar_entering_audio_thread"
+  which caused it to return false if currently copying a different heap.
+
+0.0.5 -> 0.0.6
+* Cleaned up the critical section handling between the DSP thread and
+  the sweep thread. (it was really messy)
+
+0.0.4 -> 0.0.5
+* Implemented a custom pool-based dynamic memory allocater. This new memory allocator
+  is now set as default. To use TLSF instead, set "USE_TLSF=-DUSE_TLSF"
+  in the Makefile before compiling. The following changes are caused
+  by this switch:
+* Allocating memory is now approx 10 times faster (13 vs. 168
+  instructions for the allocation itself, but there are some GC
+  overhead too)
+* The allocator copies used memory only (not just the whole heap).
+  But not always! This was a lot more complicated to to with TLSF
+  so I didn't do that. Note that for the garbage collector to still
+  be hard realtime safe, the programs must ensure that full copies
+  are taken now and then. (There's a change in the API for doing that)
+* Doing a garbage collection is much faster since the heaps are usually much
+  smaller (because only used memory is copied) and that freeing
+  is 10-20 times faster.
+* Further improvements for reducing memory overhead and make
+  searching for used mem to be O(log n) instead of O(n) is
+  much simpler now. (this is TODO though)
+* However 1: In case the code using the garbage collector will
+  continue forever to allocate memory of different sizes, the
+  new dynamic memory allocator could eventually run out of memory
+  even if the program itself doesn't use very much memory.
+  I don't think this is very likely to happen for DSP routines though,
+  and there might even be solutions to fix this problem if it should
+  ever come up. For now, just switching to TLSF fixes the problem.
+* However 2: in non-synthetic benchmarks, I have not been able to see any
+  practical improvement in CPU use, apart from the slight improvement
+  in CPU available for use in non-realtime threads because taking snapshots
+  usually takes a lot less time now. But for programs doing millions
+  of allocations per second, the new memory allocator will probably
+  perform significantly better than TLSF, if it would ever make
+  sense doing so many allocations of course.
+
+0.0.3 -> 0.0.4
+* Added support for interior pointers. (Pointers which points inside
+  middle of allocated memory). Turned out Stalin depended on this,
+  plus that c compiler are free to store pointers in registers
+  and stack however they want, so it's better to be safe. Interior
+  pointers are not slower either.
+
+0.0.2 -> 0.0.3
+* Fixed header.
+
+0.0.1 -> 0.0.2
+* Made it packagable. Write make and make install to install library file and
+  header files. 
+* Added the function tar_get_dynamic_roots_for(char *pointer,char **start,char **end).
+  This function requires the source for HBGC:
+  http://www.hpl.hp.com/personal/Hans_Boehm/gc/
+* Note that there are ways to increase the execution speed
+  significantly, I just haven't had the time yet, so this update doesn't
+  contain all the changes I wished for.
+
+
+
+CREDITS
+-------
+The garbage collector may use TLSF for doing memory alloaction and deallocation. TLSF is a
+memory manager library supporting both bounded allocation time and bounded
+deallocation time with low fragmentation.
+http://rtportal.upv.es/rtmalloc/
+
+gcconfig.h and dyn_load.c is a part of Hans Bohems garbage collector:
+http://www.hpl.hp.com/personal/Hans_Boehm/gc/
+
